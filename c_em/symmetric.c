@@ -1,7 +1,28 @@
 #include<openssl/conf.h>
 #include<openssl/evp.h>
+#include <openssl/rand.h>
 #include<openssl/err.h>
 #include<string.h>
+#define DEBUG
+
+#define printBytesN(a,b) printBytes(a,b,NULL)
+
+void printBytes(unsigned char* bytes, int len, const char* prompt){
+    int i=0;
+
+    if (prompt != NULL) {
+        printf("%s:\n",prompt);
+    }
+    for(i=0; i<len; i++){
+        printf("%02x ", *(bytes + i));
+        if ((i + 1) % 10 == 0) {
+            printf("\n");
+        }
+    }
+    if( i % 10 != 0 ) {
+        printf("\n");
+    }
+}
 
 void handleErrors(void)
 {
@@ -9,19 +30,45 @@ void handleErrors(void)
     abort();
 }
 
-int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
-            unsigned char *iv, unsigned char *ciphertext)
+int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *ciphertext)
 {
     EVP_CIPHER_CTX *ctx;
 
     int len;
-
+    char password[10];
+    char salt[PKCS5_SALT_LEN];
+    char key_iv[48];
     int ciphertext_len;
 
     /* Create and initialise the context */
     if(!(ctx = EVP_CIPHER_CTX_new()))
         handleErrors();
+    
 
+    // read password
+    for(;;){
+        printf("please input your password\n");
+        scanf("%10s", password);
+        if(strlen(password) > 5){
+            break;
+        }
+        printf("password too short, at least six letters.\n");
+    }
+    // generate salt
+    printf("The salt is:\n");
+    RAND_bytes(salt, sizeof(salt));
+    #ifdef DEBUG
+    printBytesN(salt, sizeof(salt));
+    #endif
+    
+    // generate key and iv
+    if (0 == PKCS5_PBKDF2_HMAC(password, strlen(password), salt, sizeof(salt),
+                                       1000, EVP_sha256(), sizeof(key_iv), key_iv)) {
+            handleErrors();
+    }
+    // put salt into ciphertext
+    memcpy(ciphertext, salt, sizeof(salt));
+    ciphertext = ciphertext + sizeof(salt);
     /*
      * Initialise the encryption operation. IMPORTANT - ensure you use a key
      * and IV size appropriate for your cipher
@@ -29,7 +76,7 @@ int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
      * IV size for *most* modes is the same as the block size. For AES this
      * is 128 bits
      */
-    if(1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv))
+    if(1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key_iv, key_iv + 32))
         handleErrors();
 
     /*
@@ -51,21 +98,48 @@ int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
     /* Clean up */
     EVP_CIPHER_CTX_free(ctx);
 
-    return ciphertext_len;
+    return ciphertext_len + sizeof(salt);
 }
 
-int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
-            unsigned char *iv, unsigned char *plaintext)
+int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *plaintext)
 {
     EVP_CIPHER_CTX *ctx;
 
     int len;
-
+    char password[10];
+    char salt[PKCS5_SALT_LEN];
+    char key_iv[48];
     int plaintext_len;
 
     /* Create and initialise the context */
     if(!(ctx = EVP_CIPHER_CTX_new()))
         handleErrors();
+
+
+    // read password
+    for(;;){
+        printf("please input your password\n");
+        scanf("%10s", password);
+        if(strlen(password) > 5){
+            break;
+        }
+        printf("password too short, at least six letters");
+    }
+
+    // get salt from ciphertext
+    memcpy(salt, ciphertext, sizeof(salt));
+    ciphertext += sizeof(salt);
+    ciphertext_len -= sizeof(salt);
+
+    // generate key and iv
+    if (0 == PKCS5_PBKDF2_HMAC(password, strlen(password), salt, sizeof(salt),
+                                       1000, EVP_sha256(), sizeof(key_iv), key_iv)) {
+            handleErrors();
+    }
+
+    #ifdef DEBUG
+    printBytesN(salt, sizeof(salt));
+    #endif
 
     /*
      * Initialise the decryption operation. IMPORTANT - ensure you use a key
@@ -74,7 +148,7 @@ int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
      * IV size for *most* modes is the same as the block size. For AES this
      * is 128 bits
      */
-    if(1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv))
+    if(1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key_iv, key_iv + 32))
         handleErrors();
 
     /*
@@ -100,17 +174,6 @@ int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
 }
 
 int main(){
-    /*
-     * Set up the key and iv. Do I need to say to not hard code these in a
-     * real application? :-)
-     */
-
-    /* A 256 bit key */
-    unsigned char *key = (unsigned char *)"01234567890123456789012345678901";
-
-    /* A 128 bit IV */
-    unsigned char *iv = (unsigned char *)"0123456789012345";
-
     /* Message to be encrypted */
     unsigned char *plaintext =
         (unsigned char *)"The quick brown fox jumps over the lazy dog";
@@ -128,7 +191,7 @@ int main(){
     int decryptedtext_len, ciphertext_len;
 
     /* Encrypt the plaintext */
-    ciphertext_len = encrypt (plaintext, strlen ((char *)plaintext), key, iv,
+    ciphertext_len = encrypt (plaintext, strlen ((char *)plaintext),
                               ciphertext);
 
     /* Do something useful with the ciphertext here */
@@ -136,7 +199,7 @@ int main(){
     BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
 
     /* Decrypt the ciphertext */
-    decryptedtext_len = decrypt(ciphertext, ciphertext_len, key, iv,
+    decryptedtext_len = decrypt(ciphertext, ciphertext_len, 
                                 decryptedtext);
 
     /* Add a NULL terminator. We are expecting printable text */
